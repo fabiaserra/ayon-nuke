@@ -50,7 +50,10 @@ from ayon_core.pipeline.colorspace import (
 )
 from ayon_core.pipeline.workfile import BuildWorkfile
 from . import gizmo_menu
-from .constants import ASSIST
+from .constants import (
+    ASSIST,
+    LOADER_CATEGORY_COLORS,
+)
 
 from .workio import save_file
 from .utils import get_node_outputs
@@ -804,32 +807,23 @@ def on_script_load():
 
 
 def check_inventory_versions():
-    """
-    Actual version identifier of Loaded containers
+    """Update loaded container nodes' colors based on version state.
 
-    Any time this function is run it will check all nodes and filter only
-    Loader nodes for its version. It will get all versions from database
-    and check if the node is having actual version. If not then it will color
-    it to red.
+    This will group containers by their version to outdated, not found,
+    invalid or latest and colorize the nodes based on the category.
     """
     host = registered_host()
     containers = host.get_containers()
     project_name = get_current_project_name()
 
-    category_colors = {
-        "latest": "0x4ecd25ff",
-        "outdated": "0xd84f20ff",
-        "invalid": "0xff0000ff",
-        "not_found": "0xffff00ff",
-    }
-
     filtered_containers = filter_containers(containers, project_name)
     for category, containers in filtered_containers._asdict().items():
-        container_color = category_colors.get(category) or category_colors["not_found"]
+        if category not in LOADER_CATEGORY_COLORS:
+            continue
+        color = LOADER_CATEGORY_COLORS[category]
+        color = int(color, 16)  # convert hex to nuke tile color int
         for container in containers:
-            container["node"]["tile_color"].setValue(
-                int(container_color, 16)
-            )
+            container["node"]["tile_color"].setValue(color)
 
 
 def writes_version_sync():
@@ -893,7 +887,7 @@ def check_product_name_exists(nodes, product_name):
                 False)
 
 
-def format_anatomy(data):
+def get_work_default_directory(data):
     ''' Helping function for formatting of anatomy paths
 
     Arguments:
@@ -930,7 +924,10 @@ def format_anatomy(data):
         },
         "frame": "#" * frame_padding,
     })
-    return anatomy.format(data)
+
+    work_default_dir_template = anatomy.get_template_item("work", "default", "directory")
+    normalized_dir = work_default_dir_template.format_strict(data).normalized()
+    return str(normalized_dir).replace("\\", "/")
 
 
 def script_name():
@@ -1106,13 +1103,9 @@ def create_write_node(
         "imageio_writes": imageio_writes,
         "ext": ext
     })
-    anatomy_filled = format_anatomy(data)
 
     # build file path to workfiles
-    fdir = str(
-        anatomy_filled["work"]["default"]["directory"]
-    ).replace("\\", "/")
-    data["work"] = fdir
+    data["work"] = get_work_default_directory(data)
     fpath = StringTemplate(data["fpath_template"]).format_strict(data)
 
     # create directory
@@ -1400,9 +1393,16 @@ class WorkfileSettings(object):
         Context._project_entity = project_entity
         self._project_name = project_name
         self._folder_path = get_current_folder_path()
-        self._task_name = get_current_task_name()
         self._folder_entity = ayon_api.get_folder_by_path(
             project_name, self._folder_path
+        )
+        self._task_name = get_current_task_name()
+        self._context_label = "{} > {}".format(self._folder_path,
+                                               self._task_name)
+        self._task_entity = ayon_api.get_task_by_name(
+            project_name,
+            self._folder_entity["id"],
+            self._task_name
         )
         self._root_node = root_node or nuke.root()
         self._nodes = self.get_nodes(nodes=nodes)
@@ -1923,39 +1923,39 @@ Reopening Nuke should synchronize these paths and resolve any discrepancies.
     def reset_frame_range_handles(self):
         """Set frame range to current folder."""
 
-        if "attrib" not in self._folder_entity:
-            msg = "Folder {} don't have set any 'attrib'".format(
-                self._folder_path
+        if "attrib" not in self._task_entity:
+            msg = "Task {} doesn't have set any 'attrib'".format(
+                self._context_label
             )
             log.warning(msg)
             nuke.message(msg)
             return
 
-        folder_attributes = self._folder_entity["attrib"]
+        task_attributes = self._task_entity["attrib"]
 
         missing_cols = []
         check_cols = ["fps", "frameStart", "frameEnd",
                       "handleStart", "handleEnd"]
 
         for col in check_cols:
-            if col not in folder_attributes:
+            if col not in task_attributes:
                 missing_cols.append(col)
 
         if len(missing_cols) > 0:
             missing = ", ".join(missing_cols)
-            msg = "'{}' are not set for folder '{}'!".format(
-                missing, self._folder_path)
+            msg = "'{}' are not set for task '{}'!".format(
+                missing, self._context_label)
             log.warning(msg)
             nuke.message(msg)
             return
 
         # get handles values
-        handle_start = folder_attributes["handleStart"]
-        handle_end = folder_attributes["handleEnd"]
-        frame_start = folder_attributes["frameStart"]
-        frame_end = folder_attributes["frameEnd"]
+        handle_start = task_attributes["handleStart"]
+        handle_end = task_attributes["handleEnd"]
+        frame_start = task_attributes["frameStart"]
+        frame_end = task_attributes["frameEnd"]
 
-        fps = float(folder_attributes["fps"])
+        fps = float(task_attributes["fps"])
         frame_start_handle = frame_start - handle_start
         frame_end_handle = frame_end + handle_end
 
@@ -2002,12 +2002,12 @@ Reopening Nuke should synchronize these paths and resolve any discrepancies.
         """Set resolution to project resolution."""
         log.info("Resetting resolution")
         project_name = get_current_project_name()
-        folder_attributes = self._folder_entity["attrib"]
+        task_attributes = self._task_entity["attrib"]
 
         format_data = {
-            "width": folder_attributes["resolutionWidth"],
-            "height": folder_attributes["resolutionHeight"],
-            "pixel_aspect": folder_attributes["pixelAspect"],
+            "width": task_attributes["resolutionWidth"],
+            "height": task_attributes["resolutionHeight"],
+            "pixel_aspect": task_attributes["pixelAspect"],
             "name": project_name
         }
 
